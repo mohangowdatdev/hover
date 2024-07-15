@@ -1,214 +1,145 @@
-# Silicon Sorcerers [H.O.V.E.R] - HACKMAN-6126
-# Mohan Gowda T, Naga Balaji K N, Nithu Shree, Indhu Shriya
-
 # The project only works with a stable version of python which can coordinate with the libraries used in the project. Thus we use "python 3.8.2"
 
 # All the supported modules are listed below
-# pip install mediapipe 0.10.1
-# pip install opencv-python  4.7.0.72
-# pip install autopy 4.0.0
-# pip install numpy 1.24.3
+# pip install mediapipe
+# pip install opencv-python 
+# pip install pyautogui 
+# pip install numpy
+# pip install comtypes
+# pip install pycaw
 
 import cv2
-import mediapipe
-import numpy
-import autopy
+import mediapipe as mp
+import numpy as np
 import time
+import math
+import pyautogui
+from ctypes import cast, POINTER
+from comtypes import CLSCTX_ALL
+from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
 
+# Initialize video capture
 cap = cv2.VideoCapture(0)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
-initHand = mediapipe.solutions.hands  # Initializing mediapipe
-# Object of mediapipe with "arguments for the hands module"
-mainHand = initHand.Hands(
-    min_detection_confidence=0.8, min_tracking_confidence=0.8, max_num_hands=1
-)
-draw = (
-    mediapipe.solutions.drawing_utils
-)  # Object to draw the connections between each finger index
-(
-    wScr,
-    hScr,
-) = autopy.screen.size()  # Output s the high and width of the screen (1920 x 1080)
-pX, pY = 0, 0  # Previous x and y location
-cX, cY = 0, 0  # Current x and y location
+# Initialize mediapipe hands
+mp_hands = mp.solutions.hands
+hands = mp_hands.Hands(min_detection_confidence=0.8, min_tracking_confidence=0.8, max_num_hands=2)
+mp_drawing = mp.solutions.drawing_utils
 
+# Get screen size and initialize cursor control variables
+screen_width, screen_height = pyautogui.size()
+prev_x, prev_y = 0, 0               
 
-def handLandmarks(colorImg):
-    landmarkList = []  # Default values if no landmarks are tracked
+# Initialize audio utilities
+devices = AudioUtilities.GetSpeakers()
+interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+volume = cast(interface, POINTER(IAudioEndpointVolume))
+volRange = volume.GetVolumeRange()
+minVol, maxVol = volRange[0], volRange[1]
 
-    landmarkPositions = mainHand.process(
-        colorImg
-    )  # Object for processing the video input
-    landmarkCheck = (
-        landmarkPositions.multi_hand_landmarks
-    )  # Stores the out of the processing object (returns False on empty)
-    if landmarkCheck:  # Checks if landmarks are tracked
-        for hand in landmarkCheck:  # Landmarks for each hand
-            for index, landmark in enumerate(
-                hand.landmark
-            ):  # Loops through the 21 indexes and outputs their landmark coordinates (x, y, & z)
-                draw.draw_landmarks(
-                    img, hand, initHand.HAND_CONNECTIONS
-                )  # Draws each individual index on the hand with connections
-                h, w, c = img.shape  # Height, width and channel on the image
-                centerX, centerY = int(landmark.x * w), int(
-                    landmark.y * h
-                )  # Converts the decimal coordinates relative to the image for each index
-                landmarkList.append(
-                    [index, centerX, centerY]
-                )  # Adding index and its coordinates to a list
+last_volume_change = 0
+last_action_time = 0
 
-    return landmarkList
+def hand_landmarks(image):
+    results = hands.process(image)
+    landmark_list = []
+    if results.multi_hand_landmarks:
+        for hand_landmarks in results.multi_hand_landmarks:
+            mp_drawing.draw_landmarks(image, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+            landmark_list.append([(int(landmark.x * image.shape[1]), int(landmark.y * image.shape[0])) for landmark in hand_landmarks.landmark])
+    return landmark_list
 
-
-def fingers(landmarks):
-    fingerTips = []  # To store 4 sets of 1s or 0s
-    tipIds = [4, 8, 12, 16, 20]  # Indexes for the tips of each finger
-
-    # Check if thumb is up
-    if landmarks[tipIds[0]][1] > lmList[tipIds[0] - 1][1]:
-        fingerTips.append(1)
+def perform_actions(finger_status, current_time):
+    global last_action_time
+    if current_time - last_action_time < 0.2:
+        return
+    
+    action_performed = True
+    if all(finger_status):
+        pyautogui.press('space')
+    elif finger_status == [0, 1, 0, 0, 1]:
+        pyautogui.press('right')
+    elif finger_status == [0, 1, 1, 0, 1]:
+        pyautogui.press('left')
+    elif finger_status == [0, 1, 1, 1, 1]:
+        pyautogui.press('up')
+    elif finger_status == [0, 1, 1, 1, 0]:
+        pyautogui.press('down')
+    elif finger_status == [0, 0, 1, 0, 0]:
+        pyautogui.screenshot('screenshot.png')
     else:
-        fingerTips.append(0)
+        action_performed = False
+    
+    if action_performed:
+        last_action_time = current_time
 
-    # Check if fingers are up except the thumb
-    for id in range(1, 5):
-        if (
-            landmarks[tipIds[id]][2] < landmarks[tipIds[id] - 3][2]
-        ):  # Checks to see if the tip of the finger is higher than the joint
-            fingerTips.append(1)
-        else:
-            fingerTips.append(0)
+def get_finger_status(landmarks):
+    tip_ids = [4, 8, 12, 16, 20]
+    return [int(landmarks[tip_ids[0]][0] > landmarks[tip_ids[0] - 1][0])] + [int(landmarks[tip_id][1] < landmarks[tip_id - 2][1]) for tip_id in tip_ids[1:]]
 
-    return fingerTips
+def get_average_finger_distance(landmarks):
+    if len(landmarks) >= 2:
+        return (math.hypot(*(np.array(landmarks[0][20]) - np.array(landmarks[1][20]))) +
+                math.hypot(*(np.array(landmarks[0][16]) - np.array(landmarks[1][16])))) / 2
+    return None
 
+# Create a named window
+cv2.namedWindow("Hand Gesture Control")
 
-def controls(finger):
-    if all(finger):
-        return 1
-
-
-def forward(finger):
-    if (
-        finger[3] == 0
-        and finger[0] == 0
-        and finger[1] == 1
-        and finger[2] == 0
-        and finger[4] == 1
-    ):  # Code to move forward
-        return 1
-
-
-def backward(finger):
-    if (
-        finger[0] == 0
-        and finger[1] == 1
-        and finger[2] == 1
-        and finger[3] == 0
-        and finger[4] == 1
-    ):  # Code to move backward
-        return 1
-
-
-def up(finger):
-    if (
-        finger[0] == 0
-        and finger[1] == 1
-        and finger[2] == 1
-        and finger[3] == 1
-        and finger[4] == 1
-    ):  # Code to move up
-        return 1
-
-
-def down(finger):
-    if (
-        finger[0] == 0
-        and finger[1] == 1
-        and finger[2] == 1
-        and finger[3] == 1
-        and finger[4] == 0
-    ):  # Code to move down
-        return 1
-
-
-while True:
-    check, img = cap.read()  # Reads frames from the camera
-    imgRGB = cv2.cvtColor(
-        img, cv2.COLOR_BGR2RGB
-    )  # Changes the format of the frames from BGR to RGB
-    lmList = handLandmarks(imgRGB)
-    # cv2.rectangle(img, (75, 75), (640 - 75, 480 - 75), (255, 0, 255), 2)
-
-    if len(lmList) != 0:
-        x1, y1 = lmList[8][
-            1:
-        ]  # Gets index 8s x and y values (skips index value because it starts from 1)
-        x2, y2 = lmList[12][
-            1:
-        ]  # Gets index 12s x and y values (skips index value because it starts from 1)
-        finger = fingers(
-            lmList
-        )  # Calling the fingers function to check which fingers are up
-
-        sp = controls(finger)
-        if sp == 1:
-            autopy.key.tap(autopy.key.Code.SPACE)
-            time.sleep(1)
-
-        f1 = forward(finger)
-        if f1 == 1:
-            autopy.key.tap(autopy.key.Code.RIGHT_ARROW)
-            #time.sleep(1)
-
-        b1 = backward(finger)
-        if b1 == 1:
-            autopy.key.tap(autopy.key.Code.LEFT_ARROW)
-            #time.sleep(1)
-
-        u1 = up(finger)
-        if u1 == 1:
-            autopy.key.tap(autopy.key.Code.UP_ARROW)
-
-        d1 = down(finger)
-        if d1 == 1:
-            autopy.key.tap(autopy.key.Code.DOWN_ARROW)
-
-        if (
-            finger[1] == 1 and finger[2] == 0
-        ):  # Checks to see if the pointing finger is up and thumb finger is down
-            x3 = numpy.interp(
-                x1, (75, 640 - 75), (0, wScr)
-            )  # Converts the width of the window relative to the screen width
-            y3 = numpy.interp(
-                y1, (75, 480 - 75), (0, hScr)
-            )  # Converts the height of the window relative to the screen height
-
-            cX = (
-                pX + (x3 - pX) / 8
-            )  # Stores previous x locations to update current x location
-            cY = (
-                pY + (y3 - pY) / 8
-            )  # Stores previous y locations to update current y location
-
-            autopy.mouse.move(
-                wScr - cX, cY
-            )  # Function to move the mouse to the x3 and y3 values (wSrc inverts the direction)
-            pX, pY = (
-                cX,
-                cY,
-            )  # Stores the current x and y location as previous x and y location for next loop
-
-        if (
-            finger[1] == 0 and finger[0] == 1
-        ):  # Checks to see if the pointer finger is down and thumb finger is up
-            autopy.mouse.click()  # Left click
-            time.sleep(0.6)
-    resized_img = cv2.resize(
-        img, (800, 650)
-    )  # Change the width and height values as per your desired size
-
-    cv2.imshow("HOVER", resized_img)
-
-    if cv2.waitKey(1) & 0xFF == ord("q") :
+running = True
+while running:
+    ret, frame = cap.read()
+    if not ret:
         break
+
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    landmarks = hand_landmarks(frame_rgb)
+
+    current_time = time.time()
+
+    if landmarks:
+        distance = get_average_finger_distance(landmarks)
+        
+        if distance is not None and (current_time - last_volume_change) > 0.1:
+            vol = np.interp(distance, [50, 300], [minVol, maxVol])
+            volPercentage = np.interp(vol, [minVol, maxVol], [0, 100])
+            volume.SetMasterVolumeLevel(vol, None)
+            last_volume_change = current_time
+
+            volBar = int(np.interp(volPercentage, [0, 100], [720, 150]))
+            cv2.rectangle(frame, (50, 150), (85, 720), (0, 255, 0), 3)
+            cv2.rectangle(frame, (50, volBar), (85, 720), (0, 255, 0), cv2.FILLED)
+            cv2.putText(frame, f'{int(volPercentage)}%', (40, 140), cv2.FONT_HERSHEY_COMPLEX, 1, (0, 255, 0), 3)
+
+        if landmarks[0]:
+            finger_status = get_finger_status(landmarks[0])
+            perform_actions(finger_status, current_time)
+
+            if finger_status[1] == 1 and finger_status[2] == 0:
+                x1, y1 = landmarks[0][8]
+                x3 = np.interp(x1, (75, 1205), (0, screen_width))
+                y3 = np.interp(y1, (75, 645), (0, screen_height))
+
+                curr_x = prev_x + (x3 - prev_x) / 8
+                curr_y = prev_y + (y3 - prev_y) / 8
+
+                pyautogui.moveTo(screen_width - curr_x, curr_y)
+                prev_x, prev_y = curr_x, curr_y
+
+            if finger_status[1] == 0 and finger_status[0] == 1:
+                pyautogui.click()
+                time.sleep(0.3)
+
+    cv2.imshow("Hand Gesture Control", frame)
+
+    # Click'q' key press to quit
+    key = cv2.waitKey(1) & 0xFF
+    if key == ord('q'):
+        running = False
+
+# Clean up
+cap.release()
+cv2.destroyAllWindows()
+print("Program terminated.")
